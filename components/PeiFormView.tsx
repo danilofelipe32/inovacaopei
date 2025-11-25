@@ -1,8 +1,8 @@
+
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { fieldOrderForPreview, disciplineOptions } from '../constants.tsx';
 import { TextAreaWithActions } from './TextAreaWithActions.tsx';
-import { callGenerativeAI } from '../services/geminiService.ts';
-// FIX: Module '"../services/storageService.ts"' has no exported member 'NewPeiRecordData'. Moved import to types.ts.
+import { callGenerativeAI, setModelProgressCallback } from '../services/geminiService.ts';
 import { savePei, getPeiById, getAllRagFiles, addActivitiesToBank } from '../services/storageService.ts';
 import { Modal } from './Modal.tsx';
 import { Activity, PeiData, NewPeiRecordData } from '../types.ts';
@@ -34,7 +34,6 @@ const requiredFields = [
     ...fieldOrderForPreview.find(s => s.title.startsWith("2."))!.fields.map(f => f.id)
 ];
 
-// FIX: Changed component to accept a generic props object to resolve TypeScript errors related to the 'key' prop.
 export const PeiFormView = (props) => {
     const { editingPeiId, onSaveSuccess } = props;
     const [currentPeiId, setCurrentPeiId] = useState(editingPeiId);
@@ -47,7 +46,9 @@ export const PeiFormView = (props) => {
     const [isFullPeiModalOpen, setIsFullPeiModalOpen] = useState(false);
     const [fullPeiContent, setFullPeiContent] = useState('');
 
-    // FIX: Explicitly type the Set as Set<string> to prevent 'unknown[]' errors when converting to array.
+    // NEW: State to track AI model loading progress
+    const [modelProgress, setModelProgress] = useState<string>('');
+
     const [aiGeneratedFields, setAiGeneratedFields] = useState(new Set<string>());
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [editModalData, setEditModalData] = useState(null);
@@ -61,6 +62,13 @@ export const PeiFormView = (props) => {
 
     // Auto-save logic
     const autoSaveDataRef = useRef({ peiData, aiGeneratedFields, smartAnalysisResults, currentPeiId });
+
+    useEffect(() => {
+        // Register the callback to update progress state
+        setModelProgressCallback((progress) => {
+            setModelProgress(progress);
+        });
+    }, []);
 
     useEffect(() => {
         autoSaveDataRef.current = { peiData, aiGeneratedFields, smartAnalysisResults, currentPeiId };
@@ -99,7 +107,7 @@ export const PeiFormView = (props) => {
         }, 5000); // 5 seconds
 
         return () => clearInterval(intervalId);
-    }, []); // Run only once on mount
+    }, []);
 
     useEffect(() => {
         if (editingPeiId) {
@@ -168,12 +176,11 @@ export const PeiFormView = (props) => {
     }, [errors]);
     
     const buildAiContext = (fieldIdToExclude) => {
-        // Limits to prevent API overload
+        // Context limits
         const MAX_FILE_CHARS = 3000;
         const MAX_TOTAL_RAG_CHARS = 10000;
         const MAX_FORM_CONTEXT_CHARS = 6000;
 
-        // RAG Context from selected files
         const allRagFiles = getAllRagFiles();
         const selectedFiles = allRagFiles.filter(f => f.selected);
         let ragContext = '';
@@ -181,13 +188,11 @@ export const PeiFormView = (props) => {
         if (selectedFiles.length > 0) {
             let currentRagLength = 0;
             const ragContent = selectedFiles.map(f => {
-                // Skip if we already exceeded total limit
                 if (currentRagLength >= MAX_TOTAL_RAG_CHARS) return '';
 
                 let content = f.content || '';
-                // Truncate individual large files
                 if (content.length > MAX_FILE_CHARS) {
-                    content = content.substring(0, MAX_FILE_CHARS) + '\n...[Conteúdo truncado para não exceder o limite da IA]...';
+                    content = content.substring(0, MAX_FILE_CHARS) + '\n...[Conteúdo truncado]...';
                 }
 
                 const fileString = `Ficheiro: ${f.name}\nConteúdo:\n${content}\n\n`;
@@ -198,7 +203,6 @@ export const PeiFormView = (props) => {
             ragContext = '--- INÍCIO DOS FICHEIROS DE APOIO ---\n\n' + ragContent + '--- FIM DOS FICHEIROS DE APOIO ---\n\n';
         }
 
-        // Chain of Thought (CoT) Context from current form
         let formContextString = fieldOrderForPreview
             .flatMap(section => section.fields)
             .map(field => {
@@ -208,15 +212,29 @@ export const PeiFormView = (props) => {
             .filter(Boolean)
             .join('\n');
 
-        // Truncate form context if too large
         if (formContextString.length > MAX_FORM_CONTEXT_CHARS) {
-            formContextString = formContextString.substring(0, MAX_FORM_CONTEXT_CHARS) + '\n...[Contexto do formulário truncado]...';
+            formContextString = formContextString.substring(0, MAX_FORM_CONTEXT_CHARS) + '\n...[Contexto truncado]...';
         }
 
         const formContext = '--- INÍCIO DO CONTEXTO DO PEI ATUAL ---\n\n' + formContextString + '\n--- FIM DO CONTEXTO DO PEI ATUAL ---\n\n';
 
         return { ragContext, formContext };
     };
+
+    // Helper to display loading progress overlay or text
+    const LoadingIndicator = () => (
+        <div className="absolute inset-0 bg-white bg-opacity-90 flex flex-col items-center justify-center z-10 rounded-lg">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-2"></div>
+            <span className="text-sm font-medium text-indigo-700">
+                {modelProgress.includes('%') || modelProgress.includes('Loading') ? 'Preparando IA Local...' : 'Gerando...'}
+            </span>
+            {modelProgress && (
+                <p className="text-xs text-gray-500 mt-1 max-w-[200px] text-center truncate px-2">
+                    {modelProgress}
+                </p>
+            )}
+        </div>
+    );
 
     const handleActionClick = async (fieldId, action) => {
         if (action === 'ai' && !areRequiredFieldsFilled) {
@@ -225,11 +243,12 @@ export const PeiFormView = (props) => {
         }
 
         setLoadingStates(prev => ({ ...prev, [`${fieldId}-${action}`]: true }));
+        setModelProgress(''); // Reset progress
+
         try {
             const { ragContext, formContext } = buildAiContext(fieldId);
             let response = '';
             
-            // This is a minimal context for actions that don't need the full form, like SMART analysis.
             const studentInfoForSimpleActions = `
                 Aluno: ${peiData['aluno-nome'] || 'Não informado'}
                 Diagnóstico: ${peiData['id-diagnostico'] || 'Não informado'}
@@ -240,12 +259,12 @@ export const PeiFormView = (props) => {
                     const fieldLabelAi = fieldOrderForPreview.flatMap(s => s.fields).find(f => f.id === fieldId)?.label || '';
                     const aiPrompt = `Aja como um especialista em educação inclusiva. Sua tarefa é preencher o campo "${fieldLabelAi}" de um Plano Educacional Individualizado (PEI).
                     
-Para garantir coesão e coerência (Chain of Thought), analise CUIDADOSAMENTE os ficheiros de apoio (se houver) e os campos já preenchidos do PEI antes de gerar sua resposta.
+Para garantir coesão e coerência, analise CUIDADOSAMENTE os ficheiros de apoio (se houver) e os campos já preenchidos.
 
 ${ragContext}
 ${formContext}
                     
-Agora, com base em TODO o contexto fornecido, gere o conteúdo para o campo: "${fieldLabelAi}".
+Agora, gere o conteúdo para o campo: "${fieldLabelAi}".
 Sua resposta deve ser apenas o texto para este campo, sem introduções ou títulos.`;
 
                     response = await callGenerativeAI(aiPrompt);
@@ -257,6 +276,7 @@ Sua resposta deve ser apenas o texto para este campo, sem introduções ou títu
                     const goalText = peiData[fieldId] || '';
                     if (!goalText) {
                         alert('Por favor, preencha o campo da meta antes de solicitar a análise SMART.');
+                        setLoadingStates(prev => ({ ...prev, [`${fieldId}-${action}`]: false }));
                         return;
                     }
                     const smartPrompt = `Analise a seguinte meta de um PEI com base nos critérios SMART (Específica, Mensurável, Atingível, Relevante, Temporal). Forneça uma crítica construtiva e uma sugestão de melhoria para cada critério.
@@ -284,7 +304,7 @@ Sua resposta DEVE ser um objeto JSON válido, sem nenhum texto adicional antes o
                         setOpenSmartAnalysis(prev => ({ ...prev, [fieldId]: true }));
                     } catch (e) {
                         console.error("Failed to parse SMART analysis JSON:", e, "Raw response:", response);
-                        alert("A IA retornou uma resposta em um formato inesperado para a análise SMART. Por favor, tente novamente.");
+                        alert("A IA retornou uma resposta em um formato inesperado. Tente novamente.");
                     }
                     break;
     
@@ -298,14 +318,16 @@ Sua resposta DEVE ser um objeto JSON válido, sem nenhum texto adicional antes o
                     if (isGoalField) {
                         const goalTextForSuggest = peiData[fieldId] || '';
                         if (!goalTextForSuggest.trim()) {
-                            alert('Por favor, preencha o campo da meta antes de solicitar sugestões de atividades.');
+                            alert('Por favor, preencha o campo da meta antes de solicitar sugestões.');
+                            setLoadingStates(prev => ({ ...prev, [`${fieldId}-${action}`]: false }));
                             return;
                         }
                         promptContext = `Informações do Aluno: ${studentInfoForSimpleActions}`;
                         promptSubject = `na seguinte meta de um PEI: "${goalTextForSuggest}"`;
-                    } else { // For 'atividades-content' and 'dua-content'
+                    } else {
                         if (!areRequiredFieldsFilled) {
                             validateForm();
+                            setLoadingStates(prev => ({ ...prev, [`${fieldId}-${action}`]: false }));
                             return;
                         }
                         promptContext = `${ragContext}\n${formContext}`;
@@ -373,7 +395,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
                         setIsModalOpen(true);
                     } catch(e) {
                         console.error("Failed to parse suggested activities JSON:", e, "Raw response:", response);
-                        alert("A IA retornou uma resposta em um formato inesperado para as sugestões de atividades. Por favor, tente novamente.");
+                        alert("A IA retornou uma resposta em um formato inesperado. Tente novamente.");
                     }
                     break;
             }
@@ -384,6 +406,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
             alert(`Ocorreu um erro ao executar a ação de IA. ${errorMessage}`);
         } finally {
             setLoadingStates(prev => ({ ...prev, [`${fieldId}-${action}`]: false }));
+            setModelProgress('');
         }
     };
 
@@ -394,6 +417,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
 
         setIsGeneratingFullPei(true);
         setFullPeiContent('');
+        setModelProgress('');
 
         try {
             const { ragContext, formContext } = buildAiContext('');
@@ -401,11 +425,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
             const prompt = `
                 Aja como um especialista em educação especial e psicopedagogia.
                 Com base nos dados de ficheiros de apoio e do formulário, elabore um Plano Educacional Individualizado (PEI) completo, coeso e profissional.
-                O documento final deve ser bem estruturado, com parágrafos claros e uma linguagem técnica, mas compreensível.
-                Conecte as diferentes seções de forma lógica (ex: as metas devem refletir o diagnóstico e a avaliação, e as atividades devem estar alinhadas às metas).
-                Se houver campos não preenchidos, use seu conhecimento para fazer inferências razoáveis.
-                O tom deve ser formal e respeitoso.
-
+                
                 ${ragContext}
                 ${formContext}
 
@@ -418,9 +438,10 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
 
         } catch (error) {
             console.error('Error generating full PEI:', error);
-            alert('Ocorreu um erro ao gerar o PEI completo. Tente novamente.');
+            alert(`Ocorreu um erro ao gerar o PEI completo. ${error.message || 'Tente novamente.'}`);
         } finally {
             setIsGeneratingFullPei(false);
+            setModelProgress('');
         }
     };
     
@@ -433,6 +454,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
     const handleEditModalRegenerate = async () => {
         if (!editModalData) return;
         setIsRegenerating(true);
+        setModelProgress('');
         try {
             const { fieldId, label, text } = editModalData;
             const instruction = refinementInstruction || 'Por favor, refine e aprimore este texto.';
@@ -445,13 +467,13 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
             ${text}
             ---
 
-            O usuário forneceu a seguinte instrução para refinar o texto: "${instruction}".
+            Instrução: "${instruction}".
 
-            Considere também o seguinte contexto de documentos de apoio e do restante do PEI para manter a coerência:
+            Contexto do PEI:
             ${ragContext}
             ${formContext}
 
-            Refine o texto atual com base na instrução e no contexto. Mantenha o propósito original, mas aprimore a clareza e a estrutura. Devolva apenas o texto aprimorado.`;
+            Refine o texto atual com base na instrução e no contexto. Devolva apenas o texto aprimorado.`;
 
             const response = await callGenerativeAI(prompt);
             setEditModalData(prev => prev ? { ...prev, text: response } : null);
@@ -462,6 +484,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
             alert('Ocorreu um erro ao refinar o conteúdo.');
         } finally {
             setIsRegenerating(false);
+            setModelProgress('');
         }
     };
 
@@ -474,7 +497,6 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
     
     const handleClearForm = useCallback(() => {
         setPeiData({});
-        // FIX: Explicitly type new Set as Set<string>
         setAiGeneratedFields(new Set<string>());
         setSmartAnalysisResults({});
         setOpenSmartAnalysis({});
@@ -502,15 +524,14 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
         onSaveSuccess();
     };
 
-    // FIX: Typed the 'analysis' parameter to resolve property access errors.
-    const renderSmartAnalysis = (analysis: Record<string, {critique: string; suggestion: string}>) => {
+    const renderSmartAnalysis = (analysis) => {
         const criteriaMap = {
             isSpecific: "Específica (Specific)", isMeasurable: "Mensurável (Measurable)",
             isAchievable: "Atingível (Achievable)", isRelevant: "Relevante (Relevant)", isTimeBound: "Temporal (Time-Bound)",
         };
         return (
             <div className="space-y-4 text-sm">
-                {Object.entries(analysis).map(([key, value]) => (
+                {Object.entries(analysis).map(([key, value]: [string, any]) => (
                     <div key={key} className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                         <h4 className="font-semibold text-gray-800">{criteriaMap[key]}</h4>
                         <p className="text-gray-600 mt-1"><span className="font-medium">Crítica:</span> {value.critique}</p>
@@ -521,7 +542,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
         );
     };
     
-    const renderSuggestedActivities = (activities: Activity[]) => {
+    const renderSuggestedActivities = (activities) => {
         return (
             <div className="space-y-3">
                 {activities.map((activity, index) => (
@@ -548,7 +569,6 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
             });
             setIsEditModalOpen(true);
         } else {
-            // FIX: Cast element to HTMLTextAreaElement to access properties like 'value' and 'selectionStart'.
             const textarea = document.getElementById(fieldId) as HTMLTextAreaElement;
             if (textarea) {
                 textarea.focus();
@@ -573,9 +593,23 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
         if (textAreaFields.includes(id)) {
             const isGoal = goalFields.includes(id);
             const canSuggestActivities = isGoal || activitySuggestionFields.includes(id);
+            const isLoadingAny = loadingStates[`${id}-ai`] || loadingStates[`${id}-smart`] || loadingStates[`${id}-suggest`];
 
             return (
-                <div key={id} className="md:col-span-2">
+                <div key={id} className="md:col-span-2 relative">
+                    {/* Progress Overlay for this field */}
+                    {isLoadingAny && modelProgress && (
+                        <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/80 backdrop-blur-sm rounded-lg">
+                            <div className="text-center">
+                                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto mb-2"></div>
+                                <span className="text-xs font-semibold text-indigo-700 block mb-1">
+                                    {modelProgress.includes('%') ? 'Baixando Modelo IA...' : 'Gerando Resposta...'}
+                                </span>
+                                <span className="text-[10px] text-gray-500 max-w-[150px] block truncate">{modelProgress}</span>
+                            </div>
+                        </div>
+                    )}
+
                     <TextAreaWithActions
                         id={id}
                         label={label}
@@ -700,8 +734,17 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
                 }
                 wide
             >
-                <div className="prose max-w-none whitespace-pre-wrap font-serif text-gray-800 p-2 bg-gray-50 rounded-md">
-                    {fullPeiContent}
+                <div className="relative">
+                    {isGeneratingFullPei && modelProgress && (
+                        <div className="absolute inset-0 bg-white bg-opacity-95 flex flex-col items-center justify-center z-20">
+                            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-green-600 mb-3"></div>
+                            <p className="text-green-700 font-medium">Gerando PEI Completo...</p>
+                            <p className="text-xs text-gray-500 mt-1">{modelProgress}</p>
+                        </div>
+                    )}
+                    <div className="prose max-w-none whitespace-pre-wrap font-serif text-gray-800 p-2 bg-gray-50 rounded-md min-h-[300px]">
+                        {fullPeiContent}
+                    </div>
                 </div>
             </Modal>
 
@@ -729,12 +772,21 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
                     }
                     wide
                 >
-                    <textarea
-                        value={editModalData.text}
-                        onChange={(e) => setEditModalData(prev => prev ? { ...prev, text: e.target.value } : null)}
-                        className="w-full h-64 p-2.5 border rounded-lg transition-all duration-200 bg-gray-50 text-gray-800 border-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500"
-                        placeholder="Edite o conteúdo aqui..."
-                    />
+                    <div className="relative">
+                        {isRegenerating && modelProgress && (
+                            <div className="absolute inset-0 bg-white bg-opacity-90 flex flex-col items-center justify-center z-20 rounded-lg">
+                                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-2"></div>
+                                <p className="text-indigo-700 font-medium text-sm">Refinando...</p>
+                                <p className="text-xs text-gray-500">{modelProgress}</p>
+                            </div>
+                        )}
+                        <textarea
+                            value={editModalData.text}
+                            onChange={(e) => setEditModalData(prev => prev ? { ...prev, text: e.target.value } : null)}
+                            className="w-full h-64 p-2.5 border rounded-lg transition-all duration-200 bg-gray-50 text-gray-800 border-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500"
+                            placeholder="Edite o conteúdo aqui..."
+                        />
+                    </div>
                     <div className="mt-4 flex items-center gap-4">
                         <input
                             type="text"
@@ -749,17 +801,7 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
                             className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:bg-indigo-400 flex items-center justify-center gap-2"
                             style={{minWidth: '120px'}}
                         >
-                            {isRegenerating ? (
-                                <>
-                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                    Refinando...
-                                </>
-                            ) : (
-                                <>
-                                    <i className="fa-solid fa-wand-magic-sparkles"></i>
-                                    Refinar com IA
-                                </>
-                            )}
+                            {isRegenerating ? '...' : <><i className="fa-solid fa-wand-magic-sparkles"></i> Refinar</>}
                         </button>
                     </div>
                 </Modal>
@@ -767,6 +809,11 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
 
             <div className="text-center mb-8">
                 <h2 className="text-3xl font-bold text-gray-800 tracking-tight">{editingPeiId ? 'Editando PEI' : 'Editor de PEI'}</h2>
+                <div className="flex items-center justify-center gap-2 mt-2">
+                    <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded border border-green-200 flex items-center gap-1">
+                        <i className="fa-solid fa-microchip"></i> IA Local (iPhone 13 Ready)
+                    </span>
+                </div>
                 <p className="text-gray-600 mt-2 max-w-2xl mx-auto">
                     {editingPeiId ? `Você está editando o PEI de ${peiData['aluno-nome'] || 'aluno'}.` : 'Preencha os campos abaixo para criar um novo Plano Educacional Individualizado.'}
                 </p>
@@ -791,14 +838,14 @@ Sua resposta DEVE ser um array de objetos JSON válido, sem nenhum texto adicion
                         type="button" 
                         onClick={handleGenerateFullPei} 
                         disabled={isGeneratingFullPei || !areRequiredFieldsFilled}
-                        className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:bg-green-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                        className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:bg-green-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2 relative overflow-hidden"
                         title={!areRequiredFieldsFilled ? "Preencha os campos obrigatórios para habilitar" : "Gerar PEI completo com IA"}
                     >
+                        {isGeneratingFullPei && (
+                            <div className="absolute bottom-0 left-0 h-1 bg-green-800 transition-all duration-300" style={{ width: '100%' }}></div>
+                        )}
                         {isGeneratingFullPei ? (
-                            <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                Gerando...
-                            </>
+                            <>Gerando...</>
                         ) : (
                             <>
                                 <i className="fa-solid fa-file-invoice"></i>

@@ -1,6 +1,7 @@
 
+import * as webllm from "@mlc-ai/web-llm";
+
 // Interface used by the app to structure prompts (Text + Images)
-// We keep this structure to maintain compatibility with the UI components
 interface Part {
     text?: string;
     inlineData?: {
@@ -9,117 +10,135 @@ interface Part {
     };
 }
 
-// Global queue variables for Serializing Requests
-let requestQueue = Promise.resolve();
-let lastRequestTime = 0;
+// --- WebLLM Configuration ---
+// Using Llama 3.2 1B Instruct - optimized for mobile (iPhone 13) and speed
+const SELECTED_MODEL = "Llama-3.2-1B-Instruct-q4f16_1";
 
-// ApiFreeLLM Free API limit is 1 request per 5 seconds.
-// Updated configuration based on user request: 5.7s interval, 20 retries.
-const RATE_LIMIT_DELAY = 5700; // 5.7s buffer
-const MAX_RETRIES = 20; // Updated to 20 attempts
-const ERROR_RETRY_DELAY = 5700; // Fixed 5.7s delay between retries
+let engine: webllm.MLCEngineInterface | null = null;
+let isModelLoading = false;
+
+// Callback function to report download progress to the UI
+let onProgressCallback: ((progress: string) => void) | null = null;
 
 /**
- * Service to interact with ApiFreeLLM.
- * Includes robust error handling, retry logic, and input adaptation.
+ * Registers a callback to receive model loading progress updates.
+ * Used by components to show a progress bar or status message.
+ */
+export const setModelProgressCallback = (cb: (progress: string) => void) => {
+    onProgressCallback = cb;
+};
+
+/**
+ * Initializes the WebLLM engine.
+ * This triggers the model download on the first run.
+ * Implements a Singleton pattern to avoid re-initializing.
+ */
+export const initModel = async () => {
+    if (engine) {
+        return engine;
+    }
+
+    if (isModelLoading) {
+        // If already loading, return a promise that resolves when loaded
+        return new Promise<webllm.MLCEngineInterface>((resolve, reject) => {
+            const checkInterval = setInterval(() => {
+                if (engine) {
+                    clearInterval(checkInterval);
+                    resolve(engine);
+                } else if (!isModelLoading) {
+                    // Loading finished but engine is null (error occurred)
+                    clearInterval(checkInterval);
+                    reject(new Error("Falha na inicialização do modelo."));
+                }
+            }, 500);
+        });
+    }
+
+    isModelLoading = true;
+
+    try {
+        // Custom handler to update UI with friendly messages
+        const initProgressCallback = (report: webllm.InitProgressReport) => {
+            console.log("WebLLM Progress:", report.text);
+            if (onProgressCallback) {
+                onProgressCallback(report.text);
+            }
+        };
+
+        // Create the engine with WebGPU support
+        // Llama-3.2-1B is roughly 1GB download, cached in IndexedDB
+        engine = await webllm.CreateMLCEngine(
+            SELECTED_MODEL,
+            { 
+                initProgressCallback: initProgressCallback,
+                logLevel: "INFO" 
+            }
+        );
+
+        return engine;
+    } catch (error) {
+        console.error("WebLLM Init Error:", error);
+        isModelLoading = false;
+        throw new Error("Seu dispositivo não suporta WebGPU ou houve erro no download do modelo. Certifique-se de usar um navegador compatível (Chrome, Edge, Safari no iOS 15+).");
+    } finally {
+        isModelLoading = false;
+    }
+};
+
+/**
+ * Service to interact with Local WebLLM.
+ * Completely offline and private execution.
  */
 export const callGenerativeAI = async (prompt: string | Part[]): Promise<string> => {
     let messageContent = '';
 
-    // 1. Adapter: Convert complex prompt structure to simple string for ApiFreeLLM
+    // 1. Adapter: Convert complex prompt structure to simple string
     if (typeof prompt === 'string') {
         messageContent = prompt;
     } else if (Array.isArray(prompt)) {
+        // Extract text parts.
+        // Note: Current WebLLM implementation here focuses on Text-only models (Llama 3.2).
+        // Multimodal support would require a different model (e.g., Llama 3.2 Vision), keeping it simple for iPhone 13 performance.
         messageContent = prompt
             .map(p => p.text || '')
             .join('\n');
 
         const hasImages = prompt.some(p => p.inlineData);
         if (hasImages) {
-            console.warn("ApiFreeLLM: Imagens foram ignoradas. A versão Free suporta apenas texto.");
+            console.warn("WebLLM: Imagens foram ignoradas. O modelo Llama 3.2 1B Lite processa apenas texto para máxima velocidade.");
         }
     }
 
     const systemInstruction = "Você é um assistente especializado em educação, focado na criação de Planos Educacionais Individualizados (PEI). Suas respostas devem ser profissionais, bem estruturadas e direcionadas para auxiliar educadores. Sempre que apropriado, considere e sugira estratégias baseadas nos princípios do Desenho Universal para a Aprendizagem (DUA).";
-    const finalMessage = `${systemInstruction}\n\n${messageContent}`;
 
-    // 2. Queue Logic to serialize requests (one at a time)
-    const currentOperation = requestQueue.then(async () => {
-        // Initial Rate Limit Check
-        const now = Date.now();
-        const timeSinceLast = now - lastRequestTime;
-        if (timeSinceLast < RATE_LIMIT_DELAY) {
-            await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY - timeSinceLast));
+    try {
+        // Ensure engine is loaded
+        if (!engine) {
+            if (onProgressCallback) onProgressCallback("Iniciando motor de IA local...");
+            await initModel();
         }
 
-        let lastError: Error | null = null;
+        // Generate response
+        const response = await engine!.chat.completions.create({
+            messages: [
+                { role: "system", content: systemInstruction },
+                { role: "user", content: messageContent }
+            ],
+            // Lower temperature for more deterministic/professional results
+            temperature: 0.7,
+            max_tokens: 2048, // Allow sufficient length for full PEIs
+        });
 
-        // 3. Retry Loop (20 times)
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-                lastRequestTime = Date.now();
+        return response.choices[0].message.content || "";
 
-                const response = await fetch('https://apifreellm.com/api/chat', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        message: finalMessage
-                    })
-                });
-
-                // 4. Check for Cloudflare/WAF blocks (HTML responses)
-                const contentType = response.headers.get("content-type");
-                if (!contentType || !contentType.includes("application/json")) {
-                    const textResponse = await response.text();
-                    
-                    // If blocked by WAF/Cloudflare, retrying immediately usually won't help, but we try once more after a delay
-                    if (response.status === 403 || textResponse.includes("Cloudflare")) {
-                        throw new Error("Bloqueio de segurança (WAF/Cloudflare). Se usar VPN ou AdBlock, desative-os.");
-                    }
-                    
-                    throw new Error(`Resposta inválida da API (Status ${response.status}). Conteúdo não é JSON.`);
-                }
-
-                const data = await response.json();
-
-                // 5. Handle API Logical Responses
-                if (data.status === 'success') {
-                    return data.response;
-                } else {
-                    // Handle Error Responses from API
-                    const errorMsg = data.error || 'Erro desconhecido';
-                    throw new Error(errorMsg);
-                }
-
-            } catch (error) {
-                console.error(`Erro na tentativa ${attempt}/${MAX_RETRIES}:`, error);
-                lastError = error instanceof Error ? error : new Error(String(error));
-
-                // Check for Network Errors (likely client-side block)
-                const isNetworkError = lastError.message.includes("Failed to fetch") || lastError.message.includes("NetworkError");
-                
-                // Loop logic: wait 5.7s and try again if not the last attempt
-                if (attempt < MAX_RETRIES) {
-                    console.log(`Aguardando ${ERROR_RETRY_DELAY}ms antes da próxima tentativa...`);
-                    await new Promise(resolve => setTimeout(resolve, ERROR_RETRY_DELAY));
-                } else {
-                     // If it's the last attempt and network error
-                     if (isNetworkError) {
-                         throw new Error("Falha de conexão persistente. Verifique sua internet ou desative bloqueadores de anúncios (AdBlock/uBlock) que podem estar impedindo a requisição.");
-                     }
-                }
-            }
+    } catch (error) {
+        console.error("WebLLM Generation Error:", error);
+        const msg = String(error);
+        
+        if (msg.includes("WebGPU")) {
+            throw new Error("Erro de WebGPU. Verifique se seu navegador suporta aceleração de hardware.");
         }
-
-        // If loop finishes without success
-        throw lastError || new Error("Falha na comunicação com a IA após várias tentativas.");
-    });
-
-    // Keep queue alive even if this request fails
-    requestQueue = currentOperation.catch(() => {});
-
-    return currentOperation;
+        
+        throw new Error(`Erro na IA Local: ${msg}`);
+    }
 };

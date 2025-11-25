@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { useAppStore } from '../store.ts';
 
@@ -39,62 +40,43 @@ export const PrivacyPolicyView = () => {
         <p>A sua privacidade e a segurança dos dados com os quais você trabalha são a nossa maior prioridade. Esta Política de Privacidade explica quais informações são manuseadas, como são utilizadas e, mais importante, como garantimos a sua proteção.</p>
         <p>Ao utilizar a nossa aplicação, você concorda com as práticas descritas nesta política.</p>
 
-        <SectionTitle>2. Quais Informações Manuseamos?</SectionTitle>
-        <p>É fundamental entender a distinção entre os dados que permanecem no seu computador e os dados enviados para processamento pela Inteligência Artificial (IA).</p>
+        <SectionTitle>2. Onde os Dados Ficam?</SectionTitle>
+        <p>É fundamental entender que esta aplicação funciona <strong>100% localmente no seu dispositivo</strong>. Nenhum dado sai do seu iPhone, iPad ou Computador.</p>
         
-        <SubTitle>a) Dados Armazenados Localmente no Seu Navegador</SubTitle>
-        <p>Todo o conteúdo que você cria e salva dentro da aplicação é armazenado exclusivamente no seu computador, utilizando a tecnologia segura de armazenamento local do seu navegador. Nós, como desenvolvedores, não temos acesso a nenhuma dessas informações. Estes dados incluem:</p>
-        <ul className="list-disc list-inside space-y-1 my-3 pl-4">
-          <li>Os Planos Educacionais Individualizados (PEIs) que você cria e salva.</li>
-          <li>O seu Banco de Atividades personalizado.</li>
-          <li>O conteúdo dos ficheiros de apoio que você anexa na seção "Ficheiros de Apoio".</li>
-        </ul>
+        <SubTitle>a) Dados Armazenados Localmente</SubTitle>
+        <p>Todo o conteúdo que você cria e salva dentro da aplicação é armazenado exclusivamente no seu dispositivo, utilizando a tecnologia segura de armazenamento do seu navegador (LocalStorage e IndexedDB). Nós, como desenvolvedores, não temos acesso a nenhuma dessas informações.</p>
 
-        <SubTitle>b) Dados Enviados para Processamento de IA</SubTitle>
-        <p>Para que as funcionalidades de inteligência artificial funcionem, é necessário enviar informações de contexto do PEI para o nosso provedor de IA, a ApiFreeLLM. Estes dados incluem o conteúdo dos campos do formulário (como "Diagnóstico", "Habilidades Acadêmicas" e "Conteúdos do bimestre") e o conteúdo de texto dos ficheiros de apoio selecionados.</p>
+        <SubTitle>b) Inteligência Artificial Local (WebLLM)</SubTitle>
+        <p>Diferente de outras aplicações que enviam dados para servidores externos (nuvem), esta aplicação utiliza uma tecnologia avançada chamada <strong>WebLLM via WebGPU</strong>.</p>
+        <p>Isso significa que o "cérebro" da IA é baixado para o seu dispositivo na primeira vez que você usa e, a partir daí, <strong>todo o processamento acontece dentro do seu aparelho</strong>. Seus dados de alunos nunca trafegam pela internet para serem processados.</p>
 
-        <SectionTitle>3. Como Usamos as Suas Informações?</SectionTitle>
-        <ul className="list-disc list-inside space-y-1 my-3 pl-4">
-            <li><strong>Dados Locais:</strong> São utilizados apenas pela aplicação para permitir que você salve, edite e carregue o seu trabalho entre sessões de uso.</li>
-            <li><strong>Dados Enviados à IA:</strong> São utilizados exclusivamente em tempo real para gerar as respostas e sugestões solicitadas por você.</li>
-        </ul>
+        <SectionTitle>3. Uso Offline</SectionTitle>
+        <p>Após o download inicial do modelo de IA, a aplicação funciona perfeitamente sem conexão com a internet. Isso garante ainda mais segurança, pois elimina riscos associados à transmissão de dados.</p>
 
-        <SectionTitle>4. Política de Processamento da IA</SectionTitle>
-        <p>Este é o nosso compromisso mais importante com a sua privacidade.</p>
-        <p>Os dados enviados através das solicitações para a ApiFreeLLM (API Gratuita) são processados de forma anônima e sem necessidade de autenticação pessoal.</p>
-        <p>As suas interações com a IA são processadas para gerar a resposta e não há vínculo direto com uma conta de usuário pessoal na versão gratuita da API.</p>
-
-        <SectionTitle>5. Transferência Internacional de Dados e Conformidade com a LGPD</SectionTitle>
-        <p>A Lei Geral de Proteção de Dados (LGPD) e outras legislações de privacidade são levadas a sério por este projeto.</p>
+        <SectionTitle>4. Seus Direitos e Controle</SectionTitle>
         <ul className="list-disc list-inside space-y-2 my-3 pl-4">
-            <li><strong>Servidores Globais:</strong> O provedor da API opera servidores que podem estar localizados em diversas jurisdições.</li>
-            <li><strong>Consentimento:</strong> Ao utilizar as funcionalidades de IA da aplicação, você reconhece e concorda que os dados contextuais do PEI serão enviados para processamento temporário.</li>
-            <li><strong>Seus Direitos (LGPD):</strong>
-                <ul className="list-disc list-inside space-y-1 mt-2 pl-6">
-                    <li><strong>Acesso e Correção:</strong> Você tem controle total para acessar e corrigir todos os dados diretamente na interface da aplicação.</li>
-                    <li><strong>Exclusão:</strong> Você pode excluir qualquer PEI ou atividade a qualquer momento, removendo-os permanentemente do armazenamento local do seu navegador.</li>
-                </ul>
-            </li>
+            <li><strong>Controle Total:</strong> Você tem controle total para acessar, corrigir e excluir todos os dados diretamente na interface da aplicação.</li>
+            <li><strong>Exclusão:</strong> Ao limpar os dados do navegador ou excluir um PEI, a informação é removida permanentemente do seu dispositivo.</li>
         </ul>
 
-        <SectionTitle>6. Segurança dos Dados</SectionTitle>
+        <SectionTitle>5. Segurança dos Dados</SectionTitle>
         <ul className="list-disc list-inside space-y-1 my-3 pl-4">
-            <li>Os dados armazenados localmente estão protegidos pela segurança do seu próprio navegador.</li>
-            <li>A comunicação entre a aplicação e a ApiFreeLLM é feita através de uma conexão segura HTTPS.</li>
+            <li>Os dados estão protegidos pela segurança do seu próprio dispositivo (senha, FaceID, TouchID) e pelo sandbox do navegador.</li>
+            <li>Como não há servidor central, não há risco de vazamento de dados em massa a partir de nossos sistemas.</li>
         </ul>
 
-        <SectionTitle>7. Privacidade de Crianças</SectionTitle>
+        <SectionTitle>6. Privacidade de Crianças</SectionTitle>
         <p>A aplicação "Assistente de PEI com IA" é uma ferramenta destinada ao uso por profissionais da educação.</p>
         <ul className="list-disc list-inside space-y-1 my-3 pl-4">
             <li>A aplicação não coleta intencionalmente dados de crianças.</li>
             <li>É de responsabilidade do profissional que utiliza a ferramenta garantir que possui o consentimento necessário dos pais ou responsáveis legais para inserir e processar informações sobre os alunos, conforme as políticas da sua instituição de ensino e a legislação local.</li>
         </ul>
 
-        <SectionTitle>8. Alterações a Esta Política de Privacidade</SectionTitle>
-        <p>Podemos atualizar esta política de privacidade periodicamente. Quaisquer alterações serão publicadas nesta página, e recomendamos que a reveja de tempos em tempos.</p>
+        <SectionTitle>7. Alterações a Esta Política de Privacidade</SectionTitle>
+        <p>Podemos atualizar esta política de privacidade periodicamente. Quaisquer alterações serão publicadas nesta página.</p>
 
-        <SectionTitle>9. Contato</SectionTitle>
-        <p>Se você tiver alguma dúvida sobre esta política de privacidade, entre em contato conosco através do e-mail: <a href="mailto:danilofelipe862@educar.rn.gov.br" className="text-indigo-600 hover:underline">danilofelipe862@educar.rn.gov.br</a>.</p>
+        <SectionTitle>8. Contato</SectionTitle>
+        <p>Se você tiver alguma dúvida sobre esta política de privacidade ou sobre o funcionamento local da IA, entre em contato conosco.</p>
       </div>
 
       <div className="p-6 bg-gray-50 border-t border-gray-200 rounded-b-xl mt-auto">
